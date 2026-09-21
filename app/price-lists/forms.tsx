@@ -1,0 +1,24 @@
+"use client";
+
+import { useActionState } from "react";
+import { useFormStatus } from "react-dom";
+import { addPriceListItemAction, clonePriceListAction, createPriceListAction } from "@/lib/masters/actions";
+import type { MasterActionState, PriceList, Product } from "@/lib/masters/types";
+
+function Submit({ children, className = "btn-primary" }: { children: React.ReactNode; className?: string }) { const { pending } = useFormStatus(); return <button className={`${className} min-h-11 disabled:opacity-60`} type="submit" disabled={pending}>{pending ? "กำลังบันทึก…" : children}</button>; }
+function Errors({ state }: { state: MasterActionState }) { return state.message ? <p className={state.ok ? "notice" : "notice-error"} role={state.ok ? "status" : "alert"}>{state.message}</p> : null; }
+
+export function PriceListCreateForm() {
+  const [state, action] = useActionState(createPriceListAction, {});
+  return <form action={action} className="panel space-y-4"><div className="panel-heading"><div><h2>สร้างรายการราคา</h2><p>สร้างฉบับร่าง แล้วเพิ่มสินค้าและกำหนดราคาก่อนเผยแพร่</p></div></div><div className="grid gap-4 md:grid-cols-2"><label className="field"><span className="field-label">รหัสรายการราคา *</span><input className="input" name="code" required placeholder="เช่น PL-2026-01" /></label><label className="field"><span className="field-label">ชื่อรายการราคา *</span><input className="input" name="name" required placeholder="ราคาขายมาตรฐาน" /></label><label className="field"><span className="field-label">เริ่มใช้วันที่ *</span><input className="input" type="date" name="validFrom" required /></label><label className="field"><span className="field-label">สิ้นสุดวันที่</span><input className="input" type="date" name="validTo" /></label></div><Errors state={state} /><Submit>สร้างฉบับร่าง</Submit></form>;
+}
+
+export function AddPriceListItemForm({ priceListId, products, canViewCost }: { priceListId: string; products: Product[]; canViewCost: boolean }) {
+  const [state, action] = useActionState(addPriceListItemAction, {});
+  return <form action={action} className="panel space-y-4"><input type="hidden" name="priceListId" value={priceListId} /><div className="panel-heading"><div><h2>เพิ่มหรือปรับราคาสินค้า</h2><p>การเพิ่มซ้ำจะปรับปรุงรายการสินค้าเดิมในฉบับร่าง</p></div></div><div className="grid gap-4 md:grid-cols-2"><label className="field md:col-span-2"><span className="field-label">สินค้า *</span><select className="input" name="productId" required defaultValue=""><option value="" disabled>เลือกสินค้า</option>{products.map((product) => <option key={product.id} value={product.id}>{product.product_code} · {product.name}</option>)}</select></label><label className="field"><span className="field-label">ราคาขาย (THB) *</span><input className="input" name="sellingPrice" inputMode="decimal" required placeholder="0.00" /></label><label className="field"><span className="field-label">ฐานภาษี *</span><select className="input" name="taxBasis" defaultValue="exclusive"><option value="exclusive">ไม่รวม VAT</option><option value="inclusive">รวม VAT</option></select></label><label className="field"><span className="field-label">VAT (%) *</span><input className="input" name="vatRate" inputMode="decimal" defaultValue="7" required /></label><label className="field"><span className="field-label">SRP (THB)</span><input className="input" name="srpPrice" inputMode="decimal" placeholder="ไม่ระบุ" /></label>{canViewCost ? <label className="field"><span className="field-label">ต้นทุน (THB)</span><input className="input" name="costPrice" inputMode="decimal" placeholder="ไม่ระบุ" /></label> : null}</div><Errors state={state} /><Submit>บันทึกราคา</Submit></form>;
+}
+
+export function ClonePriceListForm({ source }: { source: PriceList }) {
+  const [state, action] = useActionState(clonePriceListAction.bind(null, source.id), {});
+  return <form action={action} className="panel space-y-4"><div className="panel-heading"><div><h2>สร้างฉบับใหม่จากรายการนี้</h2><p>คัดลอกสินค้าและราคาเป็นฉบับร่างใหม่ แก้ไขได้ก่อนเผยแพร่</p></div></div><div className="grid gap-4 md:grid-cols-2"><label className="field"><span className="field-label">รหัสฉบับใหม่ *</span><input className="input" name="code" required placeholder="รหัสต้องไม่ซ้ำ" /></label><label className="field"><span className="field-label">ชื่อฉบับใหม่ *</span><input className="input" name="name" defaultValue={`${source.name} ฉบับใหม่`} required /></label><label className="field"><span className="field-label">เริ่มใช้วันที่ *</span><input className="input" type="date" name="validFrom" defaultValue={source.valid_from} required /></label><label className="field"><span className="field-label">สิ้นสุดวันที่</span><input className="input" type="date" name="validTo" defaultValue={source.valid_to ?? ""} /></label></div><Errors state={state} /><Submit>สร้างฉบับร่างใหม่</Submit></form>;
+}
