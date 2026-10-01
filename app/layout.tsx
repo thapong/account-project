@@ -3,7 +3,7 @@ import "./globals.css";
 import { SidebarProvider } from "@/context/SidebarContext";
 
 export const metadata: Metadata = {
-  title: { default: "SRP Sales | จัดการงานขาย", template: "%s | SRP Sales" },
+  title: { default: "Atom Sales | จัดการงานขาย", template: "%s | Atom Sales" },
   description: "จัดการลูกค้า สินค้า ราคา และเอกสารการขายในที่เดียว",
 };
 

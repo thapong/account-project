@@ -10,8 +10,11 @@ export const sidebarData: MenuGroup[] = [
     { name: "ใบเสนอราคา", icon: "solar:document-text-linear", url: "/quotations" },
     { name: "ใบแจ้งหนี้ / Invoice", icon: "solar:bill-list-linear", url: "/invoices" },
     { name: "ใบวางบิล", icon: "solar:clipboard-list-linear", url: "/billing-notes" },
+    { name: "ใบเสร็จ", icon: "solar:receipt-item-linear", url: "/receipts" },
+    { name: "รายงาน", icon: "solar:chart-2-linear", url: "/reports" },
   ]},
   { heading: "จัดการระบบ", children: [
+    { name: "ตรวจสอบการนำเข้า", icon: "solar:inbox-line-linear", url: "/import-review" },
     { name: "ผู้ใช้งาน", icon: "solar:user-id-linear", url: "/users" },
     { name: "ตั้งค่าบริษัท", icon: "solar:settings-linear", url: "/settings" },
   ]},

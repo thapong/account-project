@@ -6,6 +6,11 @@ export type TaxCode = "standard" | "zero" | "exempt";
 export type QuoteLineInput = {
   productId?: string | null;
   sourcePriceListItemId?: string | null;
+  productCodeSnapshot?: string;
+  nameSnapshot?: string;
+  descriptionSnapshot?: string;
+  unitSnapshot?: string;
+  warrantySnapshot?: string;
   quantity: string | number;
   unitPrice: string | number;
   taxBasis: TaxBasis;
@@ -19,6 +24,11 @@ export type CalculatedQuoteLine = {
   lineNo: number;
   productId: string | null;
   sourcePriceListItemId: string | null;
+  productCodeSnapshot?: string;
+  nameSnapshot?: string;
+  descriptionSnapshot?: string;
+  unitSnapshot?: string;
+  warrantySnapshot?: string;
   quantity: string;
   inputUnitPrice: string;
   unitPriceExVat: string;

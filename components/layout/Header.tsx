@@ -21,7 +21,7 @@ export default function Header() {
       <div className="flex min-w-0 items-center gap-3">
         <button type="button" onClick={toggleMobile} aria-label="เปิดเมนู" className="flex size-11 items-center justify-center rounded-xl hover:bg-lightgray lg:hidden"><Menu size={21} /></button>
         <button type="button" onClick={toggleCollapse} aria-label="ย่อหรือขยายเมนู" className="hidden size-11 items-center justify-center rounded-xl hover:bg-lightgray lg:flex"><PanelLeftClose size={20} /></button>
-        <div className="min-w-0"><p className="text-[11px] font-medium tracking-wider text-bodytext">SRP SALES WORKSPACE</p><p className="truncate text-sm font-semibold">{current?.name ?? "จัดการงานขาย"}</p></div>
+        <div className="min-w-0"><p className="text-[11px] font-medium tracking-wider text-bodytext">ATOM SALES WORKSPACE</p><p className="truncate text-sm font-semibold">{current?.name ?? "จัดการงานขาย"}</p></div>
       </div>
       <div className="flex items-center gap-3">
         <Link href="/quotations/new" className="hidden items-center gap-2 rounded-xl bg-lightprimary px-3 py-2.5 text-sm font-semibold text-primary sm:inline-flex"><FilePlus2 size={17} /> สร้างใบเสนอราคา</Link>

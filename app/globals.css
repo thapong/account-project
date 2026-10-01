@@ -111,7 +111,9 @@ input, select, textarea { max-width: 100%; }
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
 @media print {
+  @page { size: A4; margin: 0; }
   header, aside, footer, .no-print { display: none !important; }
   body { background: white !important; }
-  main { padding: 0 !important; max-width: none !important; }
+  main { max-width: none !important; }
+  main.invoice-print { padding: 15mm !important; width: 210mm !important; min-height: 297mm !important; }
 }

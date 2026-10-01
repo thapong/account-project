@@ -26,7 +26,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </main>
 
         <footer className="py-5 px-6 border-t border-border/60 text-center text-xs text-bodytext">
-          SRP Sales · พื้นที่ทำงานฝ่ายขาย <span className="sr-only"> Template by{" "}
+          Atom Sales · พื้นที่ทำงานฝ่ายขาย <span className="sr-only"> Template by{" "}
           <a
             href="https://wrappixel.com"
             target="_blank"

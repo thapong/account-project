@@ -3,6 +3,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import Decimal from "decimal.js";
 import type { PoolClient } from "pg";
 import { requireUser } from "@/lib/auth";
 import { transaction } from "@/lib/db";
@@ -15,6 +16,11 @@ const uuid = z.string().uuid();
 const lineSchema = z.object({
   productId: uuid.nullish(),
   sourcePriceListItemId: uuid.nullish(),
+  productCodeSnapshot: z.string().max(200).optional(),
+  nameSnapshot: z.string().trim().min(1).max(1000).optional(),
+  descriptionSnapshot: z.string().max(10000).optional(),
+  unitSnapshot: z.string().trim().min(1).max(100).optional(),
+  warrantySnapshot: z.string().max(1000).optional(),
   quantity: z.union([z.string(), z.number()]),
   unitPrice: z.union([z.string(), z.number()]),
   taxBasis: z.enum(["exclusive", "inclusive"]),
@@ -46,6 +52,8 @@ const invoiceMetaSchema = z.object({
 
 type ActionResult = { ok: true; id: string; message?: string } | { ok: false; error: string; fieldErrors?: Record<string, string[]> };
 const safeError = (error: unknown, fallback = "ไม่สามารถบันทึกเอกสารได้") => {
+  if (error instanceof Error && /[\u0E00-\u0E7F]/.test(error.message)) return error.message;
+  if (error instanceof Error && /column|constraint|violates|relation|duplicate key/i.test(error.message)) return error.message;
   if (error instanceof Error && /must be|At least|invalid|greater|non-negative/i.test(error.message)) return error.message;
   return fallback;
 };
@@ -164,9 +172,11 @@ async function persistQuotation(client: PoolClient, input: z.infer<typeof quoteI
         quantity,unit_price_ex_vat,input_tax_basis,input_unit_price,line_discount_amount,document_discount_allocated,tax_code,vat_rate,
         net_amount,vat_amount,total_amount,wht_rate,wht_base_amount,warranty_snapshot)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
-      [revisionId, line.lineNo, line.productId, line.sourcePriceListItemId, product.product_code, product.name, product.description, product.unit,
+      [revisionId, line.lineNo, line.productId, line.sourcePriceListItemId, line.productCodeSnapshot ?? product.product_code,
+        line.nameSnapshot ?? product.name, line.descriptionSnapshot ?? product.description, line.unitSnapshot ?? product.unit,
         line.quantity, line.unitPriceExVat, line.taxBasis, line.inputUnitPrice, line.lineDiscountAmount, line.documentDiscountAllocated,
-        line.taxCode, line.vatRate, line.netAmount, line.vatAmount, line.totalAmount, line.whtRate, line.whtBaseAmount, product.warranty],
+        line.taxCode, line.vatRate, line.netAmount, line.vatAmount, line.totalAmount, line.whtRate, line.whtBaseAmount,
+        line.warrantySnapshot ?? product.warranty],
     );
   }
   await client.query("UPDATE quotations SET current_revision_id = $2, updated_at = now() WHERE id = $1", [quotationId, revisionId]);
@@ -207,14 +217,15 @@ async function transitionQuotation(id: string, target: "sent" | "accepted" | "ca
     await transaction(async (client) => {
       const rows = await client.query<{ owner_user_id: string; status: "draft" | "sent" | "accepted" | "cancelled"; current_revision_id: string }>("SELECT owner_user_id, status, current_revision_id FROM quotations WHERE id = $1 FOR UPDATE", [id]);
       const quote = rows.rows[0];
-      if (!quote || !canTransitionQuotation(user, quote.owner_user_id, quote.status, target)) throw new Error("ไม่สามารถเปลี่ยนสถานะเอกสารนี้ได้");
+      if (!quote) throw new Error("ไม่พบใบเสนอราคา");
+      if (!canTransitionQuotation(user, quote.owner_user_id, quote.status, target)) throw new Error(`ไม่อนุญาตให้เปลี่ยนสถานะจาก ${quote.status} เป็น ${target}`);
       if (target !== "cancelled") {
         const count = await client.query<{ count: string }>("SELECT count(*)::text AS count FROM quotation_items WHERE quotation_revision_id = $1", [quote.current_revision_id]);
         if (Number(count.rows[0]?.count ?? 0) === 0) throw new Error("ใบเสนอราคาต้องมีรายการสินค้าอย่างน้อยหนึ่งรายการ");
       }
       await client.query("UPDATE quotations SET status = $2, updated_at = now() WHERE id = $1", [id, target]);
       await client.query("UPDATE quotation_revisions SET status = $2, updated_at = now() WHERE id = $1", [quote.current_revision_id, target]);
-      await client.query("INSERT INTO document_events(quotation_id,quotation_revision_id,event_type,actor_id) VALUES($1,$2,$3,$4)", [id, quote.current_revision_id, target, user.id]);
+      await client.query("INSERT INTO document_events(quotation_id,event_type,actor_id) VALUES($1,$2,$3)", [id, target, user.id]);
     });
     revalidatePath(`/quotations/${id}`); revalidatePath("/quotations");
     return { ok: true, id, message: target === "sent" ? "ส่งใบเสนอราคาแล้ว" : target === "accepted" ? "บันทึกการตอบรับแล้ว" : "ยกเลิกเอกสารแล้ว" };
@@ -224,7 +235,97 @@ export async function sendQuotation(id: string): Promise<ActionResult> { return 
 export async function acceptQuotation(id: string): Promise<ActionResult> { return transitionQuotation(id, "accepted"); }
 export async function cancelQuotation(id: string): Promise<ActionResult> { return transitionQuotation(id, "cancelled"); }
 
-export async function issueInvoice(quotationId: string): Promise<ActionResult> {
+const invoiceIssueSchema = z.object({
+  itemIds: z.array(uuid).min(1),
+  whtRate: z.union([z.string(), z.number()]).default("0"),
+});
+
+const manualInvoiceSchema = z.object({
+  customerId: uuid,
+  documentDate: z.string().date(),
+  dueDate: z.string().date().optional(),
+  documentTitle: z.enum(["ใบแจ้งหนี้", "Invoice"]).default("ใบแจ้งหนี้"),
+  paymentTerms: z.string().max(2000).optional(),
+  whtRate: z.union([z.string(), z.number()]).default("0"),
+  lines: z.array(lineSchema.extend({
+    nameSnapshot: z.string().trim().min(1).max(1000),
+  })).min(1).max(200),
+}).superRefine((value, ctx) => {
+  if (value.dueDate && value.dueDate < value.documentDate) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["dueDate"], message: "วันครบกำหนดต้องไม่ก่อนวันที่เอกสาร" });
+  }
+});
+
+function readManualInvoiceInput(formData: FormData) {
+  let lines: unknown;
+  try { lines = JSON.parse(String(formData.get("lines") ?? "[]")); } catch { lines = []; }
+  const parsed = manualInvoiceSchema.safeParse({
+    customerId: String(formData.get("customerId") ?? ""),
+    documentDate: String(formData.get("documentDate") ?? ""),
+    dueDate: String(formData.get("dueDate") ?? "") || undefined,
+    documentTitle: String(formData.get("documentTitle") ?? "ใบแจ้งหนี้"),
+    paymentTerms: String(formData.get("paymentTerms") ?? ""),
+    whtRate: String(formData.get("whtRate") ?? "0"),
+    lines,
+  });
+  if (!parsed.success) throw parsed.error;
+  return parsed.data;
+}
+
+export async function createManualInvoice(formData: FormData): Promise<ActionResult> {
+  const user = await requireUser(["admin", "manager", "accounting"]);
+  try {
+    const input = readManualInvoiceInput(formData);
+    const invoiceId = await transaction(async (client) => {
+      const customerResult = await client.query<any>(`SELECT id, customer_code, legal_name, tax_id, branch_name, address,
+          contact_name, contact_phone, contact_email, credit_days, billing_schedule, payment_schedule
+        FROM customers WHERE id=$1 AND is_active=true`, [input.customerId]);
+      const customer = customerResult.rows[0];
+      if (!customer) throw new Error("ไม่พบลูกค้าที่เลือกหรือไม่พร้อมใช้งาน");
+      const settings = await client.query<any>("SELECT legal_name,tax_id,address,phone,email,bank_name,bank_branch,bank_account_no FROM company_settings WHERE id=true");
+      const seller = settings.rows[0] ?? { legal_name: "บริษัทของคุณ", tax_id: "", address: "", phone: "", email: "" };
+      const rate = new Decimal(input.whtRate);
+      if (!rate.isFinite() || rate.isNegative() || rate.greaterThan(100)) throw new Error("อัตราหัก ณ ที่จ่ายไม่ถูกต้อง");
+      const calculation = calculateQuotation(input.lines as QuoteLineInput[], 0);
+      const sequence = await client.query<{ reserve_document_number: string }>("SELECT reserve_document_number('invoice')::text");
+      const number = sequence.rows[0]?.reserve_document_number;
+      if (!number) throw new Error("ไม่สามารถออกเลขใบแจ้งหนี้ได้");
+      const estimatedWht = new Decimal(calculation.taxableAmount).mul(rate).div(100).toDecimalPlaces(2).toFixed(2);
+      const receivable = new Decimal(calculation.grandTotal).minus(estimatedWht).toDecimalPlaces(2).toFixed(2);
+      const sellerSnapshot = { schema_version: 1, ...seller };
+      const customerSnapshot = { schema_version: 1, customer_code: customer.customer_code, legal_name: customer.legal_name,
+        tax_id: customer.tax_id ?? "", branch_name: customer.branch_name, address: customer.address,
+        credit_days: customer.credit_days, billing_schedule: customer.billing_schedule, payment_schedule: customer.payment_schedule };
+      const inserted = await client.query<{ id: string }>(`INSERT INTO invoices
+        (invoice_no,customer_id,source_quotation_id,source_quotation_revision_id,document_date,due_date,document_title,seller_snapshot,customer_snapshot,payment_terms,tax_mode,subtotal,line_discount_total,document_discount_amount,taxable_amount,vat_amount,grand_total,estimated_wht_amount,estimated_receivable,wht_rate,created_by)
+        VALUES($1,$2,NULL,NULL,$3,$4,$5,$6,$7,$8,'per_line',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
+        [`IN-${String(number).padStart(6, "0")}`, input.customerId, input.documentDate, input.dueDate ?? null, input.documentTitle,
+          sellerSnapshot, customerSnapshot, input.paymentTerms ?? "", calculation.subtotal, calculation.lineDiscountTotal,
+          calculation.documentDiscountAmount, calculation.taxableAmount, calculation.vatAmount, calculation.grandTotal,
+          estimatedWht, receivable, rate.toFixed(4), user.id]);
+      const id = inserted.rows[0]?.id;
+      if (!id) throw new Error("ไม่สามารถสร้างใบแจ้งหนี้ได้");
+      for (const line of calculation.lines) {
+        await client.query(`INSERT INTO invoice_items
+          (invoice_id,line_no,source_quotation_item_id,product_id,product_code_snapshot,name_snapshot,description_snapshot,unit_snapshot,quantity,unit_price_ex_vat,input_tax_basis,input_unit_price,line_discount_amount,document_discount_allocated,tax_code,vat_rate,net_amount,vat_amount,total_amount,wht_rate,wht_base_amount)
+          VALUES($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+          [id, line.lineNo, line.productId, line.productCodeSnapshot ?? "", line.nameSnapshot ?? "", line.descriptionSnapshot ?? "", line.unitSnapshot ?? "ชิ้น",
+            line.quantity, line.unitPriceExVat, line.taxBasis, line.inputUnitPrice, line.lineDiscountAmount, line.documentDiscountAllocated,
+            line.taxCode, line.vatRate, line.netAmount, line.vatAmount, line.totalAmount, rate.toFixed(4), line.netAmount]);
+      }
+      await client.query("INSERT INTO document_events(invoice_id,event_type,actor_id,reason) VALUES($1,'issued',$2,'สร้างใบแจ้งหนี้โดยตรง')", [id, user.id]);
+      return id;
+    });
+    revalidatePath("/invoices");
+    revalidatePath(`/invoices/${invoiceId}`);
+    return { ok: true, id: invoiceId, message: "สร้างใบแจ้งหนี้แล้ว" };
+  } catch (error) {
+    if (error instanceof z.ZodError) return { ok: false, error: "ข้อมูลใบแจ้งหนี้ไม่ถูกต้อง", fieldErrors: error.flatten().fieldErrors as Record<string, string[]> };
+    return { ok: false, error: safeError(error, "ไม่สามารถสร้างใบแจ้งหนี้ได้") };
+  }
+}
+
+export async function issueInvoice(quotationId: string, itemIds?: string[], whtRate?: string | number): Promise<ActionResult> {
   const user = await requireUser(["admin", "manager", "accounting"]);
   if (!canIssueInvoice(user)) return { ok: false, error: "คุณไม่มีสิทธิ์ออกใบแจ้งหนี้" };
   if (!uuid.safeParse(quotationId).success) return { ok: false, error: "รหัสเอกสารไม่ถูกต้อง" };
@@ -233,19 +334,43 @@ export async function issueInvoice(quotationId: string): Promise<ActionResult> {
       const quoteResult = await client.query<any>(`SELECT q.*, r.* FROM quotations q JOIN quotation_revisions r ON r.id = q.current_revision_id WHERE q.id = $1 FOR UPDATE`, [quotationId]);
       const quote = quoteResult.rows[0];
       if (!quote) throw new Error("ไม่พบใบเสนอราคา");
-      const existing = await client.query<{ id: string }>("SELECT id FROM invoices WHERE source_quotation_id = $1", [quotationId]);
-      if (existing.rows[0]) return existing.rows[0].id;
       if (quote.status !== "accepted") throw new Error("ออกใบแจ้งหนี้ได้เมื่อใบเสนอราคาได้รับการตอบรับแล้ว");
+      const requested = invoiceIssueSchema.safeParse({ itemIds: itemIds ?? [], whtRate: whtRate ?? "0" });
+      if (!requested.success) throw new Error("กรุณาเลือกรายการสินค้าอย่างน้อยหนึ่งรายการ");
+      const rate = new Decimal(requested.data.whtRate);
+      if (!rate.isFinite() || rate.isNegative() || rate.greaterThan(100)) throw new Error("อัตราหัก ณ ที่จ่ายไม่ถูกต้อง");
+      const quoteItems = await client.query<any>("SELECT * FROM quotation_items WHERE quotation_revision_id = $1 ORDER BY line_no FOR UPDATE", [quote.current_revision_id]);
+      const used = await client.query<{ source_quotation_item_id: string }>(`SELECT DISTINCT ii.source_quotation_item_id
+        FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id
+        WHERE i.source_quotation_id = $1 AND i.status = 'issued' AND ii.source_quotation_item_id IS NOT NULL`, [quotationId]);
+      const usedIds = new Set(used.rows.map((row) => row.source_quotation_item_id));
+      const selectedIds = [...new Set(requested.data.itemIds)];
+      const selected = quoteItems.rows.filter((row) => selectedIds.includes(row.id));
+      if (selected.length !== selectedIds.length) throw new Error("พบรายการสินค้าที่ไม่อยู่ในใบเสนอราคา");
+      if (selected.some((row) => usedIds.has(row.id))) throw new Error("มีรายการสินค้าที่ถูกออกใบแจ้งหนี้ไปแล้ว");
+      if (selected.length === 0) throw new Error("กรุณาเลือกรายการสินค้าอย่างน้อยหนึ่งรายการ");
+      const sum = (field: string) => selected.reduce((total, row) => total.plus(new Decimal(row[field] ?? 0)), new Decimal(0)).toDecimalPlaces(2).toFixed(2);
+      const subtotal = selected.reduce((total, row) => total.plus(new Decimal(row.unit_price_ex_vat).mul(row.quantity)), new Decimal(0)).toDecimalPlaces(2).toFixed(2);
+      const lineDiscountTotal = sum("line_discount_amount");
+      const documentDiscountAmount = sum("document_discount_allocated");
+      const taxableAmount = sum("net_amount");
+      const vatAmount = sum("vat_amount");
+      const grandTotal = sum("total_amount");
+      const estimatedWht = new Decimal(taxableAmount).mul(rate).div(100).toDecimalPlaces(2).toFixed(2);
+      const receivable = new Decimal(grandTotal).minus(estimatedWht).toDecimalPlaces(2).toFixed(2);
       const sequence = await client.query<{ reserve_document_number: string }>("SELECT reserve_document_number('invoice')::text");
       const number = sequence.rows[0]?.reserve_document_number;
-      const invoice = await client.query<{ id: string }>(`INSERT INTO invoices(invoice_no,customer_id,source_quotation_id,source_quotation_revision_id,document_date,due_date,seller_snapshot,customer_snapshot,payment_terms,tax_mode,subtotal,line_discount_total,document_discount_amount,taxable_amount,vat_amount,grand_total,estimated_wht_amount,estimated_receivable,created_by)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'per_line',$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
-        [`IN-${String(number).padStart(6, "0")}`, quote.customer_id, quotationId, quote.current_revision_id, quote.document_date, quote.valid_until, quote.seller_snapshot, quote.customer_snapshot, quote.payment_terms, quote.subtotal, quote.line_discount_total, quote.document_discount_amount, quote.taxable_amount, quote.vat_amount, quote.grand_total, quote.estimated_wht_amount, quote.estimated_receivable, user.id]);
+      const invoice = await client.query<{ id: string }>(`INSERT INTO invoices(invoice_no,customer_id,source_quotation_id,source_quotation_revision_id,document_date,due_date,seller_snapshot,customer_snapshot,payment_terms,tax_mode,subtotal,line_discount_total,document_discount_amount,taxable_amount,vat_amount,grand_total,estimated_wht_amount,estimated_receivable,wht_rate,created_by)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'per_line',$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
+        [`IN-${String(number).padStart(6, "0")}`, quote.customer_id, quotationId, quote.current_revision_id, quote.document_date, quote.valid_until, quote.seller_snapshot, quote.customer_snapshot, quote.payment_terms, subtotal, lineDiscountTotal, documentDiscountAmount, taxableAmount, vatAmount, grandTotal, estimatedWht, receivable, rate.toFixed(4), user.id]);
       const id = invoice.rows[0]?.id;
       if (!id) throw new Error("ไม่สามารถออกใบแจ้งหนี้ได้");
-      await client.query(`INSERT INTO invoice_items(invoice_id,line_no,source_quotation_item_id,product_id,product_code_snapshot,name_snapshot,description_snapshot,unit_snapshot,quantity,unit_price_ex_vat,input_tax_basis,input_unit_price,line_discount_amount,document_discount_allocated,tax_code,vat_rate,net_amount,vat_amount,total_amount,wht_rate,wht_base_amount)
-        SELECT $1,line_no,id,product_id,product_code_snapshot,name_snapshot,description_snapshot,unit_snapshot,quantity,unit_price_ex_vat,input_tax_basis,input_unit_price,line_discount_amount,document_discount_allocated,tax_code,vat_rate,net_amount,vat_amount,total_amount,wht_rate,wht_base_amount FROM quotation_items WHERE quotation_revision_id = $2`, [id, quote.current_revision_id]);
-      await client.query("INSERT INTO document_events(quotation_id,quotation_revision_id,invoice_id,event_type,actor_id) VALUES($1,$2,$3,'issued',$4)", [quotationId, quote.current_revision_id, id, user.id]);
+      for (const [index, row] of selected.entries()) {
+        await client.query(`INSERT INTO invoice_items(invoice_id,line_no,source_quotation_item_id,product_id,product_code_snapshot,name_snapshot,description_snapshot,unit_snapshot,quantity,unit_price_ex_vat,input_tax_basis,input_unit_price,line_discount_amount,document_discount_allocated,tax_code,vat_rate,net_amount,vat_amount,total_amount,wht_rate,wht_base_amount)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+          [id, index + 1, row.id, row.product_id, row.product_code_snapshot, row.name_snapshot, row.description_snapshot, row.unit_snapshot, row.quantity, row.unit_price_ex_vat, row.input_tax_basis, row.input_unit_price, row.line_discount_amount, row.document_discount_allocated, row.tax_code, row.vat_rate, row.net_amount, row.vat_amount, row.total_amount, rate.toFixed(4), row.net_amount]);
+      }
+      await client.query("INSERT INTO document_events(invoice_id,event_type,actor_id) VALUES($1,'issued',$2)", [id, user.id]);
       return id;
     });
     revalidatePath(`/invoices/${invoiceId}`); revalidatePath("/invoices");
@@ -352,3 +477,5 @@ export async function cancelBillingNote(noteId: string): Promise<ActionResult> {
     return { ok: true, id: noteId, message: "ยกเลิกใบวางบิลแล้ว" };
   } catch (error) { return { ok: false, error: safeError(error, "ไม่สามารถยกเลิกใบวางบิลได้") }; }
 }
+
+

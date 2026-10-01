@@ -19,7 +19,7 @@ export default function FullLogo() {
       </div>
       <div className="flex flex-col">
         <span className="font-bold text-xl tracking-tight text-dark flex items-center gap-1">
-          SRP<span className="text-primary font-extrabold">Sales</span>
+          Atom<span className="text-primary font-extrabold">Sales</span>
         </span>
         <span className="text-[10px] uppercase font-semibold text-bodytext tracking-widest -mt-1">
           Sales workspace

@@ -1,0 +1,5 @@
+import Link from "next/link";
+import AppLayout from "@/components/layout/AppLayout";
+import ManualInvoiceForm from "./ManualInvoiceForm";
+import { getManualInvoiceFormOptions } from "@/lib/documents/queries";
+export default async function NewInvoicePage() { const options = await getManualInvoiceFormOptions(); return <AppLayout><div className="page-heading"><div><div className="page-kicker">Invoice</div><h1 className="page-title">สร้างใบแจ้งหนี้</h1><p className="page-description">กรอกใบแจ้งหนี้โดยตรง หรือกลับไปเลือกจากใบเสนอราคา</p></div><Link className="btn-secondary" href="/invoices/from-quotation">สร้างจากใบเสนอราคา</Link></div><nav aria-label="เมนูใบแจ้งหนี้" className="mb-5 flex flex-wrap gap-2 border-b border-border pb-3"><Link className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-white" href="/invoices/new">1. สร้างใบแจ้งหนี้</Link><Link className="rounded-md border border-border bg-white px-3 py-2 text-sm font-semibold text-dark" href="/invoices/from-quotation">2. สร้างจากใบเสนอราคา</Link></nav><ManualInvoiceForm {...options} /></AppLayout>; }

@@ -63,9 +63,10 @@ export async function listProductsWithPrices(search = "", viewerRole: Role, inpu
            FROM price_list_items pli
            JOIN price_lists pl ON pl.id = pli.price_list_id
           WHERE pli.product_id = p.id
-            AND pl.status IN (${canViewCost ? "'draft','published'" : "'published'"})
-          ORDER BY CASE WHEN pl.status = 'draft' THEN 0 ELSE 1 END,
-                   pl.valid_from DESC, pl.version DESC, pl.created_at DESC
+            AND pl.status = 'published'
+            AND pl.valid_from <= CURRENT_DATE
+            AND (pl.valid_to IS NULL OR pl.valid_to >= CURRENT_DATE)
+          ORDER BY pl.valid_from DESC, pl.version DESC, pl.created_at DESC
           LIMIT 1
        ) current_price ON true
       WHERE ($1 = '' OR p.product_code ILIKE '%' || $1 || '%' OR p.model ILIKE '%' || $1 || '%' OR p.name ILIKE '%' || $1 || '%')
@@ -105,6 +106,47 @@ export async function listPriceLists(includeDrafts = true, input: PaginationInpu
   )]);
   const total = Number(totals[0]?.total ?? 0);
   return { rows, total, page, pageSize, pageCount: pageCount(total, pageSize) };
+}
+
+export type PriceListSummary = {
+  published_count: number;
+  draft_count: number;
+  retired_count: number;
+  current: PriceList | null;
+};
+
+/**
+ * The current price source is deliberately a published, date-effective list.
+ * Draft prices remain visible to managers in the price-list workspace but are
+ * never used as the default sales price until explicitly published.
+ */
+export async function getPriceListSummary(): Promise<PriceListSummary> {
+  const [counts, current] = await Promise.all([
+    query<{ status: PriceList["status"]; count: string }>(
+      `SELECT status, count(*)::text AS count
+         FROM price_lists
+        GROUP BY status`,
+    ),
+    query<PriceList>(
+      `SELECT pl.id, pl.code, pl.name, pl.version, pl.valid_from, pl.valid_to, pl.status, pl.currency,
+              pl.created_at, pl.updated_at, count(pli.id)::int AS item_count
+         FROM price_lists pl
+         LEFT JOIN price_list_items pli ON pli.price_list_id = pl.id
+        WHERE pl.status = 'published'
+          AND pl.valid_from <= CURRENT_DATE
+          AND (pl.valid_to IS NULL OR pl.valid_to >= CURRENT_DATE)
+        GROUP BY pl.id
+        ORDER BY pl.valid_from DESC, pl.version DESC, pl.created_at DESC
+        LIMIT 1`,
+    ),
+  ]);
+  const byStatus = new Map(counts.map((row) => [row.status, Number(row.count)]));
+  return {
+    published_count: byStatus.get("published") ?? 0,
+    draft_count: byStatus.get("draft") ?? 0,
+    retired_count: byStatus.get("retired") ?? 0,
+    current: current[0] ?? null,
+  };
 }
 
 export async function getPriceList(id: string, viewerRole: Role): Promise<PriceListDetail | null> {
